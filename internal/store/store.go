@@ -1,13 +1,23 @@
 package store
-import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
-type DB struct{*sql.DB}
-type Conversation struct{ID int64 `json:"id"`;Visitor string `json:"visitor"`;Page string `json:"page"`;Status string `json:"status"`;MessageCount int `json:"message_count"`;CreatedAt time.Time `json:"created_at"`}
-type Message struct{ID int64 `json:"id"`;ConversationID int64 `json:"conversation_id"`;Sender string `json:"sender"`;Body string `json:"body"`;SentAt time.Time `json:"sent_at"`}
-func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"parlor.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
-func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS conversations(id INTEGER PRIMARY KEY AUTOINCREMENT,visitor TEXT DEFAULT 'anonymous',page TEXT DEFAULT '/',status TEXT DEFAULT 'open',message_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation_id INTEGER NOT NULL,sender TEXT NOT NULL,body TEXT NOT NULL,sent_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)}
-func(db *DB)CreateConversation(visitor,page string)(*Conversation,error){res,err:=db.Exec(`INSERT INTO conversations(visitor,page)VALUES(?,?)`,visitor,page);if err!=nil{return nil,err};id,_:=res.LastInsertId();return &Conversation{ID:id,Visitor:visitor,Page:page,Status:"open"},nil}
-func(db *DB)ListConversations()([]Conversation,error){rows,_:=db.Query(`SELECT c.id,c.visitor,c.page,c.status,COUNT(m.id),c.created_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id GROUP BY c.id ORDER BY c.created_at DESC LIMIT 100`);defer rows.Close();var out[]Conversation;for rows.Next(){var c Conversation;rows.Scan(&c.ID,&c.Visitor,&c.Page,&c.Status,&c.MessageCount,&c.CreatedAt);out=append(out,c)};return out,nil}
-func(db *DB)AddMessage(m *Message)error{res,err:=db.Exec(`INSERT INTO messages(conversation_id,sender,body)VALUES(?,?,?)`,m.ConversationID,m.Sender,m.Body);if err!=nil{return err};m.ID,_=res.LastInsertId();db.Exec(`UPDATE conversations SET message_count=message_count+1 WHERE id=?`,m.ConversationID);return nil}
-func(db *DB)GetMessages(convID int64)([]Message,error){rows,_:=db.Query(`SELECT id,conversation_id,sender,body,sent_at FROM messages WHERE conversation_id=? ORDER BY sent_at`,convID);defer rows.Close();var out[]Message;for rows.Next(){var m Message;rows.Scan(&m.ID,&m.ConversationID,&m.Sender,&m.Body,&m.SentAt);out=append(out,m)};return out,nil}
-func(db *DB)CloseConversation(id int64){db.Exec(`UPDATE conversations SET status='closed' WHERE id=?`,id)}
-func(db *DB)Stats()(map[string]interface{},error){var open,total int;db.QueryRow(`SELECT COUNT(*) FROM conversations WHERE status='open'`).Scan(&open);db.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&total);return map[string]interface{}{"open_conversations":open,"total_conversations":total},nil}
+import ("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{db *sql.DB}
+type Item struct{
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Description string `json:"description"`
+	Status string `json:"status"`
+	Category string `json:"category"`
+	Tags string `json:"tags"`
+	CreatedAt string `json:"created_at"`
+}
+func Open(d string)(*DB,error){if err:=os.MkdirAll(d,0755);err!=nil{return nil,err};db,err:=sql.Open("sqlite",filepath.Join(d,"parlor.db")+"?_journal_mode=WAL&_busy_timeout=5000");if err!=nil{return nil,err}
+db.Exec(`CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT DEFAULT '',status TEXT DEFAULT 'active',category TEXT DEFAULT '',tags TEXT DEFAULT '',created_at TEXT DEFAULT(datetime('now')))`)
+return &DB{db:db},nil}
+func(d *DB)Close()error{return d.db.Close()}
+func genID()string{return fmt.Sprintf("%d",time.Now().UnixNano())}
+func now()string{return time.Now().UTC().Format(time.RFC3339)}
+func(d *DB)Create(e *Item)error{e.ID=genID();e.CreatedAt=now();_,err:=d.db.Exec(`INSERT INTO items(id,name,description,status,category,tags,created_at)VALUES(?,?,?,?,?,?,?)`,e.ID,e.Name,e.Description,e.Status,e.Category,e.Tags,e.CreatedAt);return err}
+func(d *DB)Get(id string)*Item{var e Item;if d.db.QueryRow(`SELECT id,name,description,status,category,tags,created_at FROM items WHERE id=?`,id).Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt)!=nil{return nil};return &e}
+func(d *DB)List()[]Item{rows,_:=d.db.Query(`SELECT id,name,description,status,category,tags,created_at FROM items ORDER BY created_at DESC`);if rows==nil{return nil};defer rows.Close();var o []Item;for rows.Next(){var e Item;rows.Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt);o=append(o,e)};return o}
+func(d *DB)Delete(id string)error{_,err:=d.db.Exec(`DELETE FROM items WHERE id=?`,id);return err}
+func(d *DB)Count()int{var n int;d.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n);return n}
